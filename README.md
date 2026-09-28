@@ -31,11 +31,10 @@ Windows PowerShell:
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env    # then set COINGECKO_API_KEY=...
-uvicorn app.main:app --port 8000
-pytest -q
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 | `.env` variable | Default | Meaning |
@@ -44,7 +43,7 @@ pytest -q
 | `COINGECKO_API_KEY` | – | your key; stays in `backend/.env` only |
 | `CACHE_TTL_SECONDS` | `600` | how long the final result is served before a background refresh |
 | `MAX_MARKET_PAGES` | `20` | safety cap for Stage A pages (the early stop usually ends at ~11) |
-| `MAX_DETAIL_REQUESTS` | `700` | new detail calls per refresh (cached coins are free) |
+| `MAX_DETAIL_REQUESTS` | `300` (`700` in `.env.example`) | new detail calls per refresh (cached coins are free) |
 | `MIN_REQUEST_INTERVAL_SECONDS` | per plan | override the rate limiter (public 10s, demo 2.1s, pro 0.15s) |
 
 ### Frontend
