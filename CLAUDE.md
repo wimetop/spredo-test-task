@@ -95,6 +95,8 @@ component libraries, SSR, WebSockets.
   Demo ≈ 30 calls/min; public (no key) is lower and less stable.
 - **Pro:** base `https://pro-api.coingecko.com/api/v3`, header `x-cg-pro-api-key`.
 - Select plan via `COINGECKO_PLAN=public|demo|pro`. API key lives ONLY in `backend/.env`.
+- **Public-API fallback:** if `COINGECKO_API_KEY` is empty, the effective plan is `public` regardless of
+  `COINGECKO_PLAN` (demo/pro without a key would only return 401). A warning is logged at startup.
 
 ### Verified API facts
 > Verified 2026-09-28 with real requests (public, no key).
@@ -124,9 +126,16 @@ Stage B (per-coin detail calls) is expensive, so shrink the candidate set with c
 **Stage B — per coin, expensive:** for Stage A survivors only
 `GET /coins/{id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false`
 - Apply criteria 2 and 6.
-- Cap with `MAX_DETAIL_REQUESTS`; go through the shared rate limiter.
-- Per-coin detail cache with long TTL (these fields change slowly). P1: persist to `backend/.cache/details.json`
-  so restarts during development don't burn the rate limit.
+- Go through the shared rate limiter.
+- **Incremental coverage:** `MAX_DETAIL_REQUESTS` caps *new upstream* detail calls per refresh; coins already in the
+  detail cache don't count toward the cap. Candidates beyond the cap are counted in `funnel.details_skipped`, and the
+  next refresh continues where the previous one stopped. Set `MAX_DETAIL_REQUESTS=700` to cover all ~700 candidates
+  in one run (~25 min on Demo).
+- **Per-coin detail cache, 24h TTL** (`DETAIL_CACHE_TTL_SECONDS`, default 86400), persisted to
+  `backend/.cache/details.json` (saved every 10 fetches and on shutdown). Only `preview_listing` and
+  `market_data.total_value_locked` are stored. Restarts don't burn the rate limit.
+- A detail call that still fails after retries is counted in `funnel.details_failed` (that coin is excluded) and does
+  not abort the run.
 
 **Caching / serving**
 - Final result cached in memory with `CACHE_TTL_SECONDS` (default 600).
@@ -134,12 +143,15 @@ Stage B (per-coin detail calls) is expensive, so shrink the candidate set with c
   Demo plan, so the endpoint must **never block for minutes**: it returns current state with a `status`
   (`warming` | `ready` | `error`) and progress.
 - Only one refresh at a time (`asyncio.Lock`); concurrent requests never trigger duplicate upstream calls.
-- If a refresh fails but old data exists → serve it with `stale: true`.
+- If a refresh fails but old data exists → serve it with `stale: true`, plus `error`. With no old data → `status: "error"`.
+- During the first warm-up the live funnel is exposed, so the UI can show progress. Later refreshes keep serving
+  the previous result (status stays `ready`) until the new one is complete.
+- `error` (string | null) holds the last refresh failure message.
 
 **HTTP client rules**
 - Single shared `httpx.AsyncClient`, timeout ~15s.
 - Simple async rate limiter: minimum interval between requests, derived from plan
-  (public ~6s, demo ~2.1s, pro ~0.15s), overridable via env.
+  (public **10s**, raised from 6s after observed 429s; demo 2.1s; pro 0.15s), overridable via env.
 - On 429/5xx: honor `Retry-After` if present, else exponential backoff; max 3 retries.
 
 ### Filter semantics (implement in `filters.py`, cover with tests)
@@ -167,11 +179,14 @@ combination `preview_listing == true` + TVL > $50k may legitimately return very 
   "status": "ready",
   "updated_at": "2026-09-28T12:00:00Z",
   "stale": false,
+  "error": null,
   "progress": {"stage": "details", "done": 120, "total": 240},
   "funnel": {
     "markets_scanned": 3500,
     "passed_market_filters": 240,
     "details_checked": 240,
+    "details_failed": 0,
+    "details_skipped": 0,
     "passed_all": 12
   },
   "count": 12,
@@ -185,6 +200,9 @@ combination `preview_listing == true` + TVL > $50k may legitimately return very 
   ]
 }
 ```
+`progress.stage` is one of `idle | markets | details | done`. Coverage = `details_checked` of `passed_market_filters`;
+when `details_skipped > 0` the result is incomplete and the UI must say so.
+
 Backend returns the full filtered list; search / max-FDV / sort are done **client-side** (the list is small,
 interactions are instant, and it avoids extra round trips). Mention this decision in the README.
 
@@ -201,6 +219,10 @@ interactions are instant, and it avoids extra round trips). Mention this decisio
 - Table columns: #, logo + name + symbol, price, market cap, FDV, 24h volume, TVL (compact USD, e.g. `$12.3M`).
 - "Last updated" timestamp + Refresh button.
 - Keep CSS minimal and readable; responsive enough that the table scrolls horizontally on small screens.
+- Coverage: when `details_skipped > 0` show "Checked X of Y candidates" (result is incomplete).
+- Show the response's `error` field when present (error state, or alongside stale data).
+- Dev-only mock data: `src/mocks/sample.json` (~10 items), off by default, enabled with `?mock=1`, with a visible
+  "MOCK DATA" badge, so search / max FDV / sort can be demoed when the real result is empty.
 
 ---
 
