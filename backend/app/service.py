@@ -164,11 +164,15 @@ class ProjectService:
         """Stage A: bulk pages sorted by volume desc; stop once volume drops below the threshold."""
         max_pages = self._settings.max_market_pages
         candidates: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
         for page_no in range(1, max_pages + 1):
             self._progress = Progress(stage="markets", done=page_no - 1, total=max_pages)
             page = await self._client.markets_page(page_no)
-            funnel.markets_scanned += len(page)
-            candidates.extend(c for c in page if filters.passes_market_filters(c))
+            # Rankings shift while we page, so a coin can appear on two pages: keep the first occurrence.
+            unique = [c for c in page if c["id"] not in seen_ids]
+            seen_ids.update(c["id"] for c in unique)
+            funnel.markets_scanned += len(unique)
+            candidates.extend(c for c in unique if filters.passes_market_filters(c))
             if filters.should_stop_paging(page):
                 break
         funnel.passed_market_filters = len(candidates)

@@ -89,7 +89,7 @@ served. Coverage is `details_checked` of `passed_market_filters`.
 
 - [x] Backend REST endpoint returning coins that match all 6 criteria
 - [x] Clean structure: config / API client / pure filters / service / schemas / routes
-- [x] Unit tests for every criterion and the paging early stop (`pytest`: 11 passed)
+- [x] Unit tests for every criterion and the paging early stop plus market-page dedupe (`pytest`: 12 passed)
 - [x] Rate limiting, retries (`Retry-After`), result cache, persisted detail cache, background warm-up
 - [x] Frontend: project list, max-FDV filter, partial case-insensitive search (name + symbol), sort by market cap / 24h volume (asc/desc)
 - [x] Loading, warming (progress + polling), error (with retry), empty (with funnel), stale and coverage states
@@ -107,12 +107,14 @@ frontend/src/ api.ts  types.ts  App.tsx  components/{Controls,ProjectsTable,Funn
 - **Two-stage pipeline.** Stage A uses cheap bulk calls: `/coins/markets` (250 coins/page) applies criteria 1, 3, 4
   and 5. Stage B makes one expensive `/coins/{id}` call per Stage A survivor, only for `preview_listing` and TVL.
 - **Volume-desc early stop.** Markets are requested sorted by `volume_desc`. As soon as a page's last coin has volume
-  ≤ $50k, every later coin fails criterion 5, so paging stops (≈11 pages / 2,750 coins instead of ~72 pages / 17.8k).
+  ≤ $50k, every later coin fails criterion 5, so paging stops (≈11 pages / ~2,740 coins instead of ~72 pages / 17.8k).
 - **Caching.** The final result is kept in memory for `CACHE_TTL_SECONDS`. Per-coin details (only the two fields we
   need) are cached for **24h** and persisted to `backend/.cache/details.json`, so restarts and refreshes don't spend
   the rate limit again.
 - **Background warm-up.** A full run starts at startup (FastAPI lifespan). The endpoint returns the current state
   immediately; an `asyncio.Lock` ensures only one refresh runs, so concurrent requests never duplicate upstream calls.
+- **Dedupe across pages.** Rankings shift while paging, so a coin can appear on two pages (14 duplicates in the
+  final run). Stage A keeps only the first occurrence of each `id`.
 - **Rate limiter + retries.** One shared `httpx.AsyncClient`, a minimum interval between requests per plan, and on
   429/5xx it honors `Retry-After` (observed: 59s) or uses exponential backoff, max 3 retries. One failing coin is
   counted in `details_failed` and doesn't abort the run.
@@ -138,21 +140,20 @@ frontend/src/ api.ts  types.ts  App.tsx  components/{Controls,ProjectsTable,Funn
 **MOCK DATA** badge. It exists because the real result can legitimately be empty, and reviewers should still be able
 to try search, max FDV and sorting. It is dev-only: the `import.meta.env.DEV` guard removes it from production builds.
 
-## Results (at submission time)
+## Results
 
-Snapshot from the running backend at **2026-09-28 11:07 UTC** (Demo plan, first full warm-up still in progress):
+Final run at **2026-09-28 11:28 UTC** (Demo plan, full warm-up complete, duplicates across pages removed):
 
 | Step | Count |
 |---|---|
-| Coins scanned (Stage A, 11 pages) | 2,750 |
-| Passed market cap / supply / FDV / volume | 698 |
-| Details checked so far | **313 of 698** |
+| Unique coins scanned (Stage A, 11 pages) | 2,736 |
+| Passed market cap / supply / FDV / volume | 692 |
+| Details checked | **692 of 692** (0 failed, 0 skipped) |
 | Passed all 6 criteria | **0** |
 
-**None of the checked coins had `preview_listing == true`**, while many pass the TVL check (in an earlier sample of
-40 coins, 16 had TVL > $50k). So the result was **0 at submission time**. The remaining candidates are still being
-checked, and the funnel on the page shows the live numbers. Preview listings are rare and usually tiny, so 0 is a
-plausible final answer.
+Every candidate was checked, and **none had `preview_listing == true`**, so the result is **0**.
+In a local experiment without the `preview_listing` criterion, **101 unique projects pass the other 5**, so
+`preview_listing` alone empties the result. Use `?mock=1` to try the UI controls on sample data.
 
 ## Limitations & what I'd do next
 
